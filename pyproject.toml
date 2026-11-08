@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cua-op"
+version = "0.1.0"
+description = "Online MoE routing profiling and expert pruning for computer-use agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+
+# The pieces run in different places: the profiling server on a GPU box, the
+# on-policy environment next to the desktop VMs, the pruner wherever the runs
+# are. So the base install is only what all of them share (reading a run, and
+# the server's HTTP client), and each role is an extra. Install the ones the
+# machine plays, e.g. `uv sync --extra server` on the GPU box.
+dependencies = [
+    "numpy>=2",
+    "requests",
+]
+
+[project.optional-dependencies]
+# moe_profiler's hooks: a hooked Hugging Face MoE model.
+profiler = [
+    # Held to the stack the hooks were verified on: there the fast probe stores
+    # exactly what the reference probe does, and decode-graph replays match
+    # eager decoding bit for bit. (transformers 5.22 already moves 0.08% of the
+    # stored norms by one fp16 step.) Raise only after rerunning those checks.
+    "torch>=2.13,<2.14",
+    "torchvision>=0.28,<0.29",
+    "transformers>=5.15,<5.16",
+    "accelerate>=1.14",
+    "Pillow>=10",
+]
+# moe_profiler.server: the profiling server around the hooks.
+server = [
+    "cua-op[profiler]",
+    "fastapi",
+    "uvicorn",
+    "anyio",
+    "pydantic>=2",
+]
+# Optional Triton linear-attention kernels for qwen3_5_moe checkpoints. Faster
+# prefill, but different kernels, so outputs differ at float-rounding level.
+fla = [
+    "flash-linear-attention==0.5.2",
+]
+# moe_pruner: scoring, masking, surgery and loading pruned checkpoints.
+pruner = [
+    "torch>=2.13,<2.14",
+    "transformers>=5.15,<5.16",
+    "accelerate>=1.14",
+    "safetensors>=0.8",
+]
+# onpolicy_env: the runner, the desktop environment and the agents. Covers the
+# vmware and virtualbox providers; the others need their SDK extra below.
+env = [
+    "gymnasium>=1.0",
+    "playwright",
+    "pydrive",
+    "requests-toolbelt",
+    "tldextract",
+    "python-dotenv",
+    "psutil",
+    "tqdm",
+    "filelock",
+    "openai",
+    "pydantic>=2",
+    "Pillow>=10",
+]
+docker = ["docker"]
+aws = ["boto3"]
+azure = ["azure-identity", "azure-mgmt-compute", "azure-mgmt-network"]
+aliyun = ["alibabacloud_ecs20140526", "alibabacloud_tea_openapi", "alibabacloud_tea_util"]
+volcengine = ["volcengine-python-sdk"]
+fastvm = ["fastvm"]
+
+[project.scripts]
+moe-profiler-server = "moe_profiler.server.app:main"
+moe-profiler-bench = "moe_profiler.server.bench:main"
+onpolicy-run = "onpolicy_env.run_onpolicy:main"
+onpolicy-preflight = "onpolicy_env.preflight:main"
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["moe_profiler", "moe_pruner", "onpolicy_env"]
+
+# torch/torchvision from the CUDA 13 (cu130) wheel index on Linux, the build
+# that runs these MoE VLM checkpoints on Blackwell (sm_120); PyPI's default
+# Linux wheels are a different CUDA build.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.ruff]
+line-length = 100

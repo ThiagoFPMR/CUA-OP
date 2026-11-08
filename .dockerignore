@@ -1,0 +1,10 @@
+# Dockerfile.profiling_server builds from moe_profiler and the lockfile alone, so
+# the build context is an allowlist: everything else in the repo (onpolicy_env,
+# .venv, runs, VM images) stays out, whatever gets added later.
+*
+!moe_profiler/
+!pyproject.toml
+!uv.lock
+
+**/__pycache__
+**/*.py[cod]
