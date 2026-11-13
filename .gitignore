@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+vmware_vm_data/
+virtualbox_vm_data/
+docker_vm_data/
+.vmware_vms
+.vmware_lck
+.virtualbox_vms
+.virtualbox_lck
+cache/
+results_onpolicy/
+tasks/
+results_preflight/

@@ -59,10 +59,13 @@ uv run moe-profiler-server --port 8000
 Or with Docker. The checkpoints are mounted, not baked into the image:
 
 ```bash
-docker build -f Dockerfile.profiling_server -t moe-profiler-server .
+docker build -f Dockerfile.server -t cua-op-server .
 docker run --gpus all --rm -p 8000:8000 \
-  -v /host/models:/models:ro -v /host/profiler_runs:/data moe-profiler-server
+  -v /host/models:/models:ro -v /host/profiler_runs:/data cua-op-server serve
 ```
+
+The image's commands are `serve`, `prune` and `bench`. The one after the image
+name runs with the arguments after it; with none, the image serves.
 
 The server starts with no model loaded. Each episode names the checkpoint it
 wants, and the server loads it on demand. `GET /status` shows what is loaded.
@@ -106,6 +109,15 @@ uv run scripts/prune.py /data/runs/my-moe-ckpt --criterion msan --fraction 0.5 -
 # Cut the checkpoint from that plan, then check it against the masked original.
 uv run scripts/prune.py --plan plan.json \
   --ckpt /models/my-moe-ckpt --dst /models/my-moe-ckpt-pruned --verify
+```
+
+The server image also carries the pruner, as its `prune` command (keep outputs
+under the mounts):
+
+```bash
+docker run --gpus all --rm -v /host/models:/models -v /host/profiler_runs:/data \
+  cua-op-server prune /data/runs/my-moe-ckpt --fraction 0.5 --out /data/plan.json \
+  --ckpt /models/my-moe-ckpt --dst /models/my-moe-ckpt-pruned
 ```
 
 `--domain` and `--stop-reason` choose which episodes are scored. `--save-scores`

@@ -1,0 +1,117 @@
+# syntax=docker/dockerfile:1
+# Server image: the GPU end of the pipeline, profiling and pruning.
+#
+# Carries the GPU/model stack, `moe_profiler` and `moe_pruner` (with
+# scripts/prune.py), and nothing from the environment side: no onpolicy_env.
+# The checkpoints are NOT
+# baked in. Mount a directory of them, and each client names the one it wants
+# (and the runs root under /data) per episode; the server loads it on demand, so
+# one container serves any MoE VLM. Routing statistics are written under /data
+# (mount it to keep them).
+#
+# Everything is installed from uv.lock with the `server` and `pruner` extras, so
+# the image runs exactly the versions a `uv sync --extra server --extra pruner`
+# checkout does, torch's cu130 build included.
+#
+# Build:
+#   docker build -f Dockerfile.server -t cua-op-server .
+#
+# The image puts three commands on PATH. The one named after the image name runs,
+# with the arguments after it; with no command, the image serves:
+#   serve   the profiling server    (python -m moe_profiler.server.app)
+#   prune   the pruning stage       (scripts/prune.py)
+#   bench   the hooks' benchmark    (python -m moe_profiler.server.bench)
+#
+# Serve (checkpoints and runs directory mounted from the host):
+#   docker run --gpus all --rm \
+#     -p 8000:8000 \
+#     -v /host/models:/models:ro \
+#     -v /host/profiler_runs:/data \
+#     cua-op-server serve --port 8000
+# then point a client (e.g. onpolicy_env) at it with --model_path
+# /models/my-moe-ckpt --runs_root /data/runs/my-moe-ckpt.
+#
+# Prune. Keep its outputs under a mount (relative paths land in the container's
+# /app), and mount the models writable for --dst:
+#   docker run --gpus all --rm \
+#     -v /host/models:/models -v /host/profiler_runs:/data \
+#     cua-op-server prune /data/runs/my-moe-ckpt --fraction 0.5 --out /data/plan.json \
+#     --ckpt /models/my-moe-ckpt --dst /models/my-moe-ckpt-50
+#
+# A checkpoint must be a Mixture-of-Experts VLM, or there is nothing to profile.
+
+# A plain Python base: the torch cu130 wheels bundle their own CUDA runtime, so
+# no system CUDA toolkit is needed.
+FROM python:3.12-slim-bookworm
+
+# uv installs from the lockfile; the binary is copied from uv's official image.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates git gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Use the image's Python; never download another.
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/usr/local \
+    UV_LINK_MODE=copy \
+    # Helps large checkpoints fit without fragmentation OOMs.
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    # Server defaults (app.py reads these as argument defaults). The checkpoint
+    # and runs root are not here: the client names both per episode.
+    MOE_PROFILER_HOST=0.0.0.0 \
+    MOE_PROFILER_PORT=8000 \
+    # Hub download cache and Triton JIT cache on the mounted volume, so repeated
+    # runs neither re-download checkpoints nor recompile kernels.
+    HF_HOME=/data/hf \
+    TRITON_CACHE_DIR=/data/triton
+
+WORKDIR /app
+
+# Optional: the Triton linear-attention kernels transformers uses for the
+# gated-delta-net layers of qwen3_5_moe checkpoints when they are installed (the
+# `fla` extra). Without them it falls back to a slower PyTorch reference (and
+# says so at load); with them the prefill in particular gets faster. Off by
+# default: they are different kernels, so outputs differ from the reference path
+# at the level of float rounding. `python -m moe_profiler.server.bench` measures
+# the difference.
+#   docker build --build-arg FLA=1 -f Dockerfile.server -t cua-op-server .
+ARG FLA=0
+
+# The dependencies alone, from the lock: the project itself is not installed,
+# since only its packages are copied in, below. --inexact keeps what the base
+# image already ships in /usr/local (pip), which an exact sync would remove.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project --no-cache --inexact \
+        --extra server --extra pruner $( [ "$FLA" = "1" ] && echo --extra fla )
+
+# The profiler and pruner packages, importable from anywhere in the container
+# (not just by `python -m` from /app), e.g. by a mounted script or test, plus the
+# pruning script.
+COPY moe_profiler ./moe_profiler
+COPY moe_pruner ./moe_pruner
+COPY scripts/prune.py ./scripts/prune.py
+ENV PYTHONPATH=/app
+
+# Routing-stats output plus the Hub/Triton caches; mount to persist across runs.
+VOLUME ["/data"]
+EXPOSE 8000
+
+# The commands. Each one execs Python, so Python is the container's PID 1 and
+# gets `docker stop`'s SIGTERM directly. prune is the script itself (executable,
+# with a shebang); the server modules use relative imports, so they need -m.
+COPY --chmod=755 <<'EOF' /usr/local/bin/serve
+#!/bin/sh
+exec python -m moe_profiler.server.app "$@"
+EOF
+COPY --chmod=755 <<'EOF' /usr/local/bin/bench
+#!/bin/sh
+exec python -m moe_profiler.server.bench "$@"
+EOF
+RUN ln -s /app/scripts/prune.py /usr/local/bin/prune
+
+# A default command, not an entrypoint, so the command after the image name
+# replaces it: `prune ...`, `serve --port 9000`, or anything else (e.g. `bash`).
+CMD ["serve"]
