@@ -1,6 +1,6 @@
 # CUA-OP
 
-Online profiling and pruning for Mixture-of-Experts (MoE) computer-use agents.
+On-policy profiling and pruning for Mixture-of-Experts (MoE) computer-use agents.
 
 A MoE vision-language model drives an agent through desktop tasks. While it
 works, it is served by a profiling server that records which experts every token
