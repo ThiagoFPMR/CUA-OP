@@ -27,7 +27,7 @@ be profiled.
 
 ## Roadmap
 
-- ⬜ Add demonstration code (`demo/`).
+- ⬜ Add demonstration code with an associated graphical interface (`demo/`).
 - ⬜ Rebase `onpolicy_env`'s desktop environment on OSWorld-V2 instead of OSWorld (V1).
 
 ## Setup
